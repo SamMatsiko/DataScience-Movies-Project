@@ -1,0 +1,247 @@
+---
+title: "Movie Ratings Predictor"
+author: "Samuel Matsiko"
+date: "12/13/2019"
+output: pdf_document
+---
+
+```{r, include=FALSE}
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+if(!require(data.table)) install.packages("data.table", repos = "http://cran.us.r-project.org")
+if(!require(tinytex)) install.packages("tinytex", repos = "http://cran.us.r-project.org")
+
+# MovieLens 10M dataset:
+# https://grouplens.org/datasets/movielens/10m/
+# http://files.grouplens.org/datasets/movielens/ml-10m.zip
+
+dl <- tempfile()
+download.file("http://files.grouplens.org/datasets/movielens/ml-10m.zip", dl)
+
+ratings <- fread(text = gsub("::", "\t", readLines(unzip(dl, "ml-10M100K/ratings.dat"))),
+                 col.names = c("userId", "movieId", "rating", "timestamp"))
+
+movies <- str_split_fixed(readLines(unzip(dl, "ml-10M100K/movies.dat")), "\\::", 3)
+colnames(movies) <- c("movieId", "title", "genres")
+movies <- as.data.frame(movies) %>% mutate(movieId = as.numeric(levels(movieId))[movieId],
+                                           title = as.character(title),
+                                           genres = as.character(genres))
+
+movielens <- left_join(ratings, movies, by = "movieId")
+
+# Validation set will be 10% of MovieLens data
+
+set.seed(1, sample.kind="Rounding")
+# if using R 3.5 or earlier, use `set.seed(1)` instead
+test_index <- createDataPartition(y = movielens$rating, times = 1, p = 0.1, list = FALSE)
+edx <- movielens[-test_index,]
+temp <- movielens[test_index,]
+
+# Make sure userId and movieId in validation set are also in edx set
+
+validation <- temp %>% 
+  semi_join(edx, by = "movieId") %>%
+  semi_join(edx, by = "userId")
+
+# Add rows removed from validation set back into edx set
+
+removed <- anti_join(temp, validation)
+edx <- rbind(edx, removed)
+
+rm(dl, ratings, movies, test_index, temp, movielens, removed)
+#Partioning the edx set into train and test sets
+
+test_index <- createDataPartition(y = edx$rating, times = 1,
+                                  p = 0.5, list = FALSE)
+train_set <- edx[-test_index,]
+test_set <- edx[test_index,]
+
+# To make sure userId and movieId in train set are also in test set
+test_set <- test_set %>% 
+  semi_join(train_set, by = "movieId") %>%
+  semi_join(train_set, by = "userId")
+
+mu<-mean(train_set$rating)
+```
+
+## Introduction
+
+A dataset is downloaded, tweaked and then split into edx and validation sets in proportions of 90% and 10% respectively. The resulting dataset comprises of 6 columns, 9000055 rows for the edx set and 999999 rows for the validation set. 
+
+While the validation set has been set aside for the final testing purposes, i have further split the edx set into train and test sets in proportions of 50% to 50% for intermediate  training, testing and cross-validation purposes. With these sets,i have modelled a recommendation sytem that predicts movie ratings using two predictors(movieId and UserId). The train set has been trained using rating approximations to predict movie ratings of the test set and then compared against the actual ratings of the test set. The performance of the model has further been improved by regularization of the rating approximations. To obtain the final results, the same training approach has been adopted to train the whole edx set(not split this time round) before predicting the ratings of the validation set, that are then compared with the actual ratings of the validation set using a RMSE function. 
+
+
+**Dimensions of the edx set**
+```{r Dimensions of the edx set, echo=FALSE}
+dim(edx)
+```
+
+
+**Dimensions of the validation set**
+```{r Dimensions of the validation set, echo=FALSE}
+dim(validation)
+```
+
+
+**Columns of the dataset**
+
+```{r Column names, echo=FALSE}
+colnames(edx)
+```
+
+
+## Methods
+
+From the data overview below, it is observed that the dataset is tidy, that is to say; every variable is represented in its own column, every observation is represented in its own row and each value is stored in one cell. We also observe that there are no null values as observed in all the distinct values of rating.
+
+
+**Data overview**
+```{r Overview of the data, echo=FALSE}
+sample_frac(edx,0.000001)
+```
+
+
+**Distinct values of rating variable**
+```{r Distinct values of rating, echo=FALSE}
+unique(edx$rating)
+
+```
+
+The 5 variables(minus the target varibale, rating) of the dataset have been explored using the visualizations below to understand the biases that might be caused by each variable hence determining predictors.From the visualizations, we observe that graphs for movies and titles are indentical, hence highly correlated. I have therefore selected the movieId variable to cater for biases of both variables. As the graph for movies variable indicates that different movies are rated differently, i have taken into account the "movie effect" while modelling. Also important to note is the effect of users. We note that some users rate/watch more movies than their counterparts. The userId has therefore also been considered a predictor. While we also observe biases due to timestamp and genres variables, they aren't as significant as those for movieId and userId variables. Therfore, i have taken only movieId and userId as predictors.  
+ 
+```{r, echo=FALSE}
+moviechart<-edx %>% 
+     dplyr::count(movieId) %>% 
+     ggplot(aes(n)) + 
+     geom_histogram(bins = 30, color = "black") + 
+     scale_x_log10() + 
+     ggtitle("Movies")
+
+userchart<-edx %>%
+     count(userId) %>% 
+     ggplot(aes(n)) + 
+     geom_histogram(bins = 30, color = "black") + 
+     scale_x_log10() +
+     ggtitle("Users")
+
+genreschart<-edx %>%
+     count(genres) %>% 
+     ggplot(aes(n)) + 
+     geom_histogram(bins = 30, color = "black") + 
+     scale_x_log10() +
+     ggtitle("Genres")
+titleschart<-edx %>%
+     count(title) %>% 
+     ggplot(aes(n)) + 
+     geom_histogram(bins = 30, color = "black") + 
+     scale_x_log10() +
+     ggtitle("Titles")
+
+timestampchart<-edx %>%
+     count(timestamp) %>% 
+     ggplot(aes(n)) + 
+     geom_histogram(bins = 30, color = "black") + 
+     scale_x_log10() +
+     ggtitle("timestamp")
+source("http://peterhaschke.com/Code/multiplot.R")   
+multiplot(moviechart, userchart, genreschart, titleschart,timestampchart,cols=2)
+
+```
+
+
+I started off with a model that assumes same rating across all movies and all users, and any variations to be random. This approximation has been found by calculating the average rating across all movies and all users. Then the model has been improved by incoporating the "movie effect" and further improvements achieved by taking into account the "user effect" as well. The effects  of both the movies and users(b_i and b_u respectively) have been determined by obtaining the mean of the residuals between the rating of the train set and the average rating across all movies and users for their respective movieIds and userIds. The resulting models have been used to predict test set ratings and compared with the actual ratings thereafter.
+
+However, post this modelling, the model still made large estimates when a movie is rated by very few users. As seen in the modelling results below, it is observed that movies that have been rated very few times(indicated by n column) are estimated highly as indicated in both the top and bottom ten movies. To remedy the situation, I deployed regularization techniques to penalize the large estimates that come from very few users. An optimal penalty term(lambda) to balance out inaccurances due to very few ratings has been obtained by cross-validation. As seen in the modelling results post regulation(also below),this has not only awarded a better estimate accordingly, but also improved the performance of the model.  
+
+
+
+```{r, echo=FALSE}
+#Training before regularization
+movie_avgs <- train_set %>% group_by(movieId) %>% summarize(b_i=mean(rating - mu))
+
+movie_titles <- edx %>% 
+     select(movieId, title) %>%
+     distinct()
+```
+
+
+
+**Top ten movies before regularization**
+
+```{r, echo=FALSE}
+train_set %>% dplyr::count(movieId) %>% 
+     left_join(movie_avgs) %>%
+     left_join(movie_titles, by="movieId") %>%
+     arrange(desc(b_i)) %>% 
+     select(title, b_i, n) %>% 
+     slice(1:10) %>% 
+     knitr::kable()
+```
+
+
+**Bottom 10 movies before regularization**
+
+```{r, echo=FALSE}
+train_set %>% dplyr::count(movieId) %>% 
+     left_join(movie_avgs) %>%
+     left_join(movie_titles, by="movieId") %>%
+     arrange(b_i) %>% 
+     select(title, b_i,  n) %>% 
+     slice(1:10) %>% 
+     knitr::kable()
+```
+
+
+
+```{r, echo=FALSE}
+
+#Regularization
+lambda <- 4.75
+mu <- mean(train_set$rating)
+movie_reg_avgs <- train_set %>% 
+     group_by(movieId) %>% 
+     summarize(b_i = sum(rating - mu)/(n()+lambda), n_i = n())
+```
+
+**Top ten movies after regularization**
+```{r, echo=FALSE}
+train_set %>%
+     dplyr::count(movieId) %>% 
+     left_join(movie_reg_avgs) %>%
+     left_join(movie_titles, by="movieId") %>%
+     arrange(desc(b_i)) %>% 
+     select(title, b_i, n) %>% 
+     slice(1:10) %>% 
+     knitr::kable()
+```
+
+
+**Bottom ten movies after regularization**
+```{r, echo=FALSE}
+
+train_set %>%
+     dplyr::count(movieId) %>% 
+     left_join(movie_reg_avgs) %>%
+     left_join(movie_titles, by="movieId") %>%
+     arrange(b_i) %>% 
+     select(title, b_i, n) %>% 
+     slice(1:10) %>% 
+     knitr::kable()
+
+```
+
+
+## Results
+
+The performance metric that has been used to guage the performance of the model is the Root Mean Square Estimate(RMSE). The performance of the first model(average rating) returned an RMSE of 1.0600456. The second model (incoporating the movie effect) returned an RMSE of 0.9439980, the third model (incoporating both movie and user efects) returned an RMSE of 0.8695042 and the forth model(after regularization) returned an RMSE 0.8679124. The final model with the validation set returned an RMSE of 0.8648295.    
+
+## Conclusion
+
+With the provided dataset, i have been able to build a recommendation system that predicts a user's movie rating using userId and movieId predictors. Some of the limitations rotate around predictions with new users or new movies since no data would be available to learn from. Another limitation is that the model did not take into account the effects by timestamp and genres variables. 
+
+My future work is to incoporate timestamp and genres variables to improve the model's preformance further. 
+
+
+
+
+
